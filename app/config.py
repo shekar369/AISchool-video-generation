@@ -13,21 +13,12 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     runs_dir: Path = Path("runs")
-    outputs_dir: Path = Path("outputs")
 
-    # Default provider per stage; a run request may override any of these.
-    script_provider: str = "mock"
-    storyboard_provider: str = "mock"
-    voice_provider: str = "mock"
-    visuals_provider: str = "mock"
-    assemble_provider: str = "mock"
-
+    # Credentials are read only by the providers that need them.
     anthropic_api_key: SecretStr | None = None
-    elevenlabs_api_key: SecretStr | None = None
-    openai_api_key: SecretStr | None = None
-
-    def default_provider(self, stage: str) -> str:
-        return getattr(self, f"{stage}_provider")
+    youtube_client_id: SecretStr | None = None
+    youtube_client_secret: SecretStr | None = None
+    youtube_refresh_token: SecretStr | None = None
 
 
 @lru_cache

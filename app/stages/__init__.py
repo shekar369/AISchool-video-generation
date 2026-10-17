@@ -1,10 +1,36 @@
-"""Pipeline stages, in execution order. Each module exposes a ``registry`` of providers."""
+"""Pipeline stages. Importing this package registers every provider in ``STAGES``."""
 
-from app.stages import assemble, script, storyboard, visuals, voice
-from app.stages.base import Provider, ProviderRegistry, StageContext, UnknownProviderError
+from app.stages import (  # noqa: F401  (imported for their @register side effects)
+    capture,
+    fact_check,
+    metadata,
+    render,
+    review,
+    script,
+    slides,
+    upload,
+    voice,
+)
+from app.stages.base import (
+    REQUIRED_STAGES,
+    STAGE_ORDER,
+    STAGES,
+    StageContext,
+    StageFn,
+    StageInputError,
+    providers,
+    register,
+)
+from app.stages.review import CHECKLIST
 
-STAGES: dict[str, ProviderRegistry] = {
-    m.registry.stage: m.registry for m in (script, storyboard, voice, visuals, assemble)
-}
-
-__all__ = ["STAGES", "Provider", "ProviderRegistry", "StageContext", "UnknownProviderError"]
+__all__ = [
+    "CHECKLIST",
+    "REQUIRED_STAGES",
+    "STAGES",
+    "STAGE_ORDER",
+    "StageContext",
+    "StageFn",
+    "StageInputError",
+    "providers",
+    "register",
+]

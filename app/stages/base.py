@@ -1,70 +1,73 @@
-"""Stage/provider contracts and the per-stage provider registry."""
+"""The provider registry ``STAGES[(stage, provider)]`` and the context passed to every stage."""
 
-from abc import ABC, abstractmethod
+import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from app.config import Settings
-from app.models import RunRequest
+from app.models import RunConfig
+
+STAGE_ORDER: tuple[str, ...] = (
+    "capture",
+    "script",
+    "fact_check",
+    "slides",
+    "voice",
+    "render",
+    "metadata",
+    "review",
+    "upload",
+)
+
+# Stages that always run, with the provider used when the config doesn't name one.
+REQUIRED_STAGES: dict[str, str] = {"capture": "text", "review": "checklist"}
 
 
-class UnknownProviderError(LookupError):
-    pass
+class StageInputError(RuntimeError):
+    """A stage could not find an artifact an earlier stage should have written."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class StageContext:
-    """Everything a provider needs to do its work for one run."""
-
     run_id: str
     run_dir: Path
-    outputs_dir: Path
-    request: RunRequest
+    config: RunConfig
     settings: Settings
-    # Outputs of previously completed stages, keyed by stage name.
-    artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def path(self, *parts: str) -> Path:
+        return self.run_dir.joinpath(*parts)
+
+    def read_json(self, name: str) -> Any:
+        path = self.path(name)
+        if not path.is_file():
+            raise StageInputError(f"{name} not found; enable the stage that produces it")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def write_json(self, name: str, data: Any) -> Path:
+        path = self.path(name)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return path
 
 
-class Provider(ABC):
-    """One implementation of a stage (e.g. a specific TTS vendor).
+StageFn = Callable[[StageContext], None]
 
-    ``run`` must be JSON-serialisable in, JSON-serialisable out: its return value is persisted
-    to ``state.json`` and handed to downstream stages via ``StageContext.artifacts``.
-    """
-
-    name: ClassVar[str]
-
-    @abstractmethod
-    def run(self, ctx: StageContext) -> dict[str, Any]: ...
+STAGES: dict[tuple[str, str], StageFn] = {}
 
 
-class ProviderRegistry:
-    def __init__(self, stage: str) -> None:
-        self.stage = stage
-        self._providers: dict[str, type[Provider]] = {}
+def register(stage: str, provider: str) -> Callable[[StageFn], StageFn]:
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"Unknown stage {stage!r}")
 
-    def register(self, name: str) -> Callable[[type[Provider]], type[Provider]]:
-        def decorator(cls: type[Provider]) -> type[Provider]:
-            if name in self._providers:
-                raise ValueError(f"{self.stage}: provider {name!r} already registered")
-            cls.name = name
-            self._providers[name] = cls
-            return cls
+    def decorator(fn: StageFn) -> StageFn:
+        if (stage, provider) in STAGES:
+            raise ValueError(f"Provider {provider!r} already registered for {stage!r}")
+        STAGES[(stage, provider)] = fn
+        return fn
 
-        return decorator
+    return decorator
 
-    def get(self, name: str) -> Provider:
-        try:
-            return self._providers[name]()
-        except KeyError:
-            raise UnknownProviderError(
-                f"Unknown {self.stage} provider {name!r}; available: {self.names()}"
-            ) from None
 
-    def names(self) -> list[str]:
-        return sorted(self._providers)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._providers
+def providers(stage: str) -> list[str]:
+    return sorted(p for s, p in STAGES if s == stage)

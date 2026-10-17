@@ -1,40 +1,75 @@
-"""FastAPI service: create runs, track their progress, inspect available providers."""
+"""FastAPI service: the dashboard creates runs, polls their state, and drives the review gate."""
 
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
-from pydantic import BaseModel
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import Settings, get_settings
-from app.models import RunRequest, RunState, RunStatus
-from app.pipeline import create_run, execute
-from app.stages import STAGES, UnknownProviderError
+from app.models import RunConfig, RunState
+from app.pipeline import (
+    ChecklistIncompleteError,
+    InvalidConfigError,
+    InvalidTransitionError,
+    approve,
+    create_run,
+    execute,
+    redo,
+    request_changes,
+)
+from app.stages import CHECKLIST, REQUIRED_STAGES, STAGE_ORDER, providers
 from app.state import RunNotFoundError, RunStore
+
+log = logging.getLogger(__name__)
 
 
 class StageInfo(BaseModel):
     stage: str
     providers: list[str]
-    default: str
+    required: bool
+
+
+class ApproveBody(BaseModel):
+    checklist: dict[str, bool]
+
+
+class ChangesBody(BaseModel):
+    notes: str = Field(min_length=1, max_length=5_000)
+    redo_from: str = "script"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     logging.basicConfig(level=settings.log_level)
+    store = RunStore(settings.runs_dir)
 
-    app = FastAPI(title="AI School 369 Video Pipeline", version=__version__)
-    app.state.settings = settings
-    app.state.store = RunStore(settings.runs_dir)
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if recovered := store.recover_interrupted():
+            log.warning("Marked interrupted runs as error: %s", recovered)
+        yield
 
-    def store(request: Request) -> RunStore:
-        return request.app.state.store
+    app = FastAPI(title="AI School 369 Video Pipeline", version=__version__, lifespan=lifespan)
+    app.state.settings, app.state.store = settings, store
 
-    def load_or_404(request: Request, run_id: str) -> RunState:
+    def guarded(action, *args) -> RunState:
+        """Run a state transition, mapping domain errors to HTTP status codes."""
         try:
-            return store(request).load(run_id)
+            return action(store, *args)
         except RunNotFoundError:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run {run_id!r} not found") from None
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+        except InvalidTransitionError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+        except ChecklistIncompleteError as exc:
+            raise HTTPException(422, {"message": str(exc), "missing": exc.missing}) from None
+        except InvalidConfigError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    def schedule(tasks: BackgroundTasks, state: RunState) -> RunState:
+        tasks.add_task(execute, store, settings, state.id)
+        return state
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -43,34 +78,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/stages")
     def list_stages() -> list[StageInfo]:
         return [
-            StageInfo(stage=name, providers=reg.names(), default=settings.default_provider(name))
-            for name, reg in STAGES.items()
+            StageInfo(stage=s, providers=providers(s), required=s in REQUIRED_STAGES)
+            for s in STAGE_ORDER
         ]
 
+    @app.get("/review/checklist")
+    def review_checklist() -> dict[str, str]:
+        return CHECKLIST
+
     @app.post("/runs", status_code=status.HTTP_202_ACCEPTED)
-    def start_run(body: RunRequest, request: Request, tasks: BackgroundTasks) -> RunState:
-        try:
-            state = create_run(store(request), settings, body)
-        except UnknownProviderError as exc:
-            raise HTTPException(422, str(exc)) from None
-        tasks.add_task(execute, store(request), settings, state.id)
-        return state
+    def start_run(config: RunConfig, tasks: BackgroundTasks) -> RunState:
+        return schedule(tasks, guarded(create_run, config))
 
     @app.get("/runs")
-    def list_runs(request: Request) -> list[RunState]:
-        return store(request).list()
+    def list_runs() -> list[RunState]:
+        return store.all()
 
     @app.get("/runs/{run_id}")
-    def get_run(run_id: str, request: Request) -> RunState:
-        return load_or_404(request, run_id)
+    def get_run(run_id: str) -> RunState:
+        return guarded(RunStore.load, run_id)
 
-    @app.post("/runs/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
-    def resume_run(run_id: str, request: Request, tasks: BackgroundTasks) -> RunState:
-        state = load_or_404(request, run_id)
-        if state.status != RunStatus.FAILED:
-            raise HTTPException(status.HTTP_409_CONFLICT, f"Run is {state.status}, not failed")
-        tasks.add_task(execute, store(request), settings, run_id)
-        return state
+    @app.post("/runs/{run_id}/approve", status_code=status.HTTP_202_ACCEPTED)
+    def approve_run(run_id: str, body: ApproveBody, tasks: BackgroundTasks) -> RunState:
+        return schedule(tasks, guarded(approve, run_id, body.checklist))
+
+    @app.post("/runs/{run_id}/changes", status_code=status.HTTP_202_ACCEPTED)
+    def changes(run_id: str, body: ChangesBody, tasks: BackgroundTasks) -> RunState:
+        return schedule(tasks, guarded(request_changes, run_id, body.notes, body.redo_from))
+
+    @app.post("/runs/{run_id}/redo", status_code=status.HTTP_202_ACCEPTED)
+    def redo_run(
+        run_id: str, tasks: BackgroundTasks, from_stage: str = Query(alias="from")
+    ) -> RunState:
+        return schedule(tasks, guarded(redo, run_id, from_stage))
 
     return app
 

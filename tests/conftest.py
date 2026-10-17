@@ -8,7 +8,7 @@ from app.state import RunStore
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(_env_file=None, runs_dir=tmp_path / "runs", outputs_dir=tmp_path / "outputs")
+    return Settings(_env_file=None, runs_dir=tmp_path / "runs")
 
 
 @pytest.fixture

@@ -1,32 +1,24 @@
-"""Stage 3 — voice: synthesise narration audio for each scene."""
+"""Stage 5: voice. Generate audio per slide; slide timing follows audio length."""
 
 import wave
-from typing import Any
 
-from app.stages.base import Provider, ProviderRegistry, StageContext
-
-registry = ProviderRegistry("voice")
+from app.stages.base import StageContext, register
 
 SAMPLE_RATE = 16_000
+WORDS_PER_SECOND = 2.5
+MIN_SECONDS = 2.0
 
 
-@registry.register("mock")
-class MockVoiceProvider(Provider):
-    """Writes silent WAV files of the right length, so timing downstream is realistic."""
-
-    def run(self, ctx: StageContext) -> dict[str, Any]:
-        out_dir = ctx.run_dir / "audio"
-        out_dir.mkdir(exist_ok=True)
-        clips = []
-        for scene in ctx.artifacts["storyboard"]["scenes"]:
-            path = out_dir / f"scene_{scene['index']:02d}.wav"
-            frames = int(scene["duration_s"] * SAMPLE_RATE)
-            with wave.open(str(path), "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(SAMPLE_RATE)
-                wav.writeframes(b"\x00\x00" * frames)
-            clips.append(
-                {"scene": scene["index"], "path": str(path), "duration_s": scene["duration_s"]}
-            )
-        return {"clips": clips}
+@register("voice", "stub")
+def voice_stub(ctx: StageContext) -> None:
+    """Offline placeholder: silent WAVs sized to a natural speaking rate for each narration."""
+    script = ctx.read_json("script.json")
+    out = ctx.path("audio")
+    out.mkdir(exist_ok=True)
+    for slide in script["slides"]:
+        seconds = max(len(slide["narration"].split()) / WORDS_PER_SECOND, MIN_SECONDS)
+        with wave.open(str(out / f"{slide['index']:02d}.wav"), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(SAMPLE_RATE)
+            wav.writeframes(b"\x00\x00" * int(seconds * SAMPLE_RATE))
