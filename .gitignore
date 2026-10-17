@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Pipeline state & artifacts
+runs/*
+!runs/.gitkeep
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+uv.lock
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Frontend (React dashboard, later)
+node_modules/
+web/dist/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
